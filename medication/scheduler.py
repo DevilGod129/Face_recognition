@@ -6,6 +6,8 @@ def check_medication(patient_id):
     today = datetime.now().strftime("%Y-%m-%d")
 
     conn = get_connection()
+    if conn is None:
+        return "ERROR", "DATABASE_UNAVAILABLE"
     cur = conn.cursor()
 
     cur.execute("""

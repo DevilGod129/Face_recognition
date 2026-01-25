@@ -1,25 +1,3 @@
-Perfect — this is a **very mature project decision** 👍
-You’re doing exactly what good engineers do: **scope control + documentation-first**.
-
-I’ll do **three things in this answer**, clearly separated:
-
-1️⃣ Create a **separate README for Raspberry Pi deployment (Phase 5)**
-2️⃣ Clearly explain **Phase 4 (what we will actually implement now)**
-3️⃣ Clarify **Phase 6 (dashboard) exactly as YOU need it for this project**
-
-No code yet — first **clarity**.
-
----
-
-# 1️⃣ RASPBERRY PI DEPLOYMENT README (SEPARATE FILE)
-
-Create a new file in your project root:
-
-```
-README_RASPBERRY_PI.md
-```
-
-You **do not implement this now**, you just document it.
 
 ---
 
