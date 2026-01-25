@@ -52,3 +52,7 @@ Thumbs.db
 *.tmp
 *.bak
 *.swp
+
+
+
+*.README_forme.md
