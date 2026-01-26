@@ -184,7 +184,8 @@ def recognize_face():
                     elif elapsed >= CONFIRM_SECONDS:
                         dispense_medication(result["compartment"])
                         last_dispense_time[best_id] = now
-                        label = f"{best_name} | DISPENSED"
+                        label = f"{best_name} | DISPENSED ({best_score:.2f})"
+
                         color = (0, 255, 0)
                         confirmed_patient_id = None
                         confirm_start_time = None
@@ -204,11 +205,11 @@ def recognize_face():
                 else:
                     confirmed_patient_id = best_id
                     confirm_start_time = now
-                    label = f"{best_name} | HOLD STILL"
+                    label = f"{best_name} | HOLD STILL({best_score:.2f})"
                     color = (0, 200, 0)
 
             elif status == "WARNING":
-                label = f"{best_name} | NOT TIME"
+                label = f"{best_name} | NOT TIME({best_score:.2f})"
                 color = (255, 255, 0)
                 confirmed_patient_id = None
                 confirm_start_time = None
@@ -222,7 +223,7 @@ def recognize_face():
 
 
             else:  # BLOCKED
-                label = f"{best_name} | ALREADY TAKEN"
+                label = f"{best_name} | ALREADY TAKEN({best_score:.2f})"
                 color = (0, 165, 255)
                 confirmed_patient_id = None
                 confirm_start_time = None
