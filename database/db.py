@@ -10,7 +10,11 @@ print("USING DATABASE FILE:", DB_PATH)
 
 
 def get_connection():
-    return sqlite3.connect(DB_PATH)
+    try:
+        return sqlite3.connect(DB_PATH)
+    except sqlite3.Error as e:
+        print("[CRITICAL] Database connection failed:", e)
+        return None
 
 
 def create_tables():

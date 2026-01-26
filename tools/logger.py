@@ -1,26 +1,31 @@
 from datetime import datetime
 from database.db import get_connection
 
-
 def log_event(patient_id, patient_name, status, compartment=None, confidence=None):
-    conn = get_connection()
-    cur = conn.cursor()
+    try:
+        conn = get_connection()
+        if conn is None:
+            return
 
-    cur.execute("""
-        INSERT INTO dispense_logs
-        (timestamp, patient_id, patient_name, status, compartment, confidence)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        patient_id,
-        patient_name,
-        status,
-        compartment,
-        confidence
-    ))
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO dispense_logs
+            (timestamp, patient_id, patient_name, status, compartment, confidence)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            patient_id,
+            patient_name,
+            status,
+            compartment,
+            confidence
+        ))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
+
+    except Exception as e:
+        print("[LOGGING ERROR]", e)
 
 
 def view_logs(limit=20):

@@ -6,8 +6,9 @@ def medication_menu():
         print("\n--- Medication Menu ---")
         print("1. Add medication")
         print("2. View medications")
-        print("3. Delete medication")
-        print("4. Back")
+        print("3. Edit medication")
+        print("4. Delete medication")
+        print("5. Back")
 
         choice = input("Choose option: ").strip()
 
@@ -16,13 +17,16 @@ def medication_menu():
         elif choice == "2":
             view_medications()
         elif choice == "3":
-            delete_medication()
+            edit_medication()
         elif choice == "4":
+            delete_medication()
+        elif choice == "5":
             break
         else:
             print("[ERROR] Invalid choice")
 
 
+# ---------------- ADD ----------------
 def add_medication():
     conn = get_connection()
     cur = conn.cursor()
@@ -45,7 +49,6 @@ def add_medication():
     start = input("Start time (HH:MM): ").strip()
     end = input("End time (HH:MM): ").strip()
 
-    # --- validation ---
     if not valid_time(start) or not valid_time(end):
         print("[ERROR] Invalid time format")
         return
@@ -57,10 +60,10 @@ def add_medication():
 
     conn.commit()
     conn.close()
-
     print("[SUCCESS] Medication added")
 
 
+# ---------------- VIEW ----------------
 def view_medications():
     conn = get_connection()
     cur = conn.cursor()
@@ -83,6 +86,54 @@ def view_medications():
         print(f"{mid}. {patient} | {med} | Comp {comp} | {start}–{end}")
 
 
+# ---------------- EDIT ----------------
+def edit_medication():
+    view_medications()
+    mid = input("\nEnter medication ID to edit: ").strip()
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT name, compartment, start_time, end_time
+        FROM medications
+        WHERE id = ?
+    """, (mid,))
+    row = cur.fetchone()
+
+    if not row:
+        print("[ERROR] Medication not found")
+        conn.close()
+        return
+
+    old_name, old_comp, old_start, old_end = row
+
+    print("\nPress Enter to keep existing value")
+
+    name = input(f"Medication name [{old_name}]: ").strip() or old_name
+    comp_input = input(f"Compartment [{old_comp}]: ").strip()
+    start = input(f"Start time [{old_start}]: ").strip() or old_start
+    end = input(f"End time [{old_end}]: ").strip() or old_end
+
+    compartment = int(comp_input) if comp_input else old_comp
+
+    if not valid_time(start) or not valid_time(end):
+        print("[ERROR] Invalid time format")
+        conn.close()
+        return
+
+    cur.execute("""
+        UPDATE medications
+        SET name = ?, compartment = ?, start_time = ?, end_time = ?
+        WHERE id = ?
+    """, (name, compartment, start, end, mid))
+
+    conn.commit()
+    conn.close()
+    print("[SUCCESS] Medication updated")
+
+
+# ---------------- DELETE ----------------
 def delete_medication():
     view_medications()
     mid = input("\nEnter medication ID to delete: ").strip()
@@ -96,6 +147,7 @@ def delete_medication():
     print("[SUCCESS] Medication deleted")
 
 
+# ---------------- VALIDATION ----------------s
 def valid_time(t):
     try:
         h, m = t.split(":")

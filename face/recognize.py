@@ -45,6 +45,21 @@ def load_embeddings():
 
     return patients
 
+def safe_log(patient_id, patient_name, status, compartment, confidence, last_logged_status):
+    prev = last_logged_status.get(patient_id)
+    if prev == status:
+        return  # avoid duplicate logs
+
+    log_event(
+        patient_id=patient_id,
+        patient_name=patient_name,
+        status=status,
+        compartment=compartment,
+        confidence=confidence
+    )
+
+    last_logged_status[patient_id] = status
+
 
 def recognize_face():
     known_faces = load_embeddings()
@@ -55,6 +70,9 @@ def recognize_face():
         return
 
     cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("[CRITICAL] Camera not detected. System paused.")
+        return
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
@@ -63,7 +81,11 @@ def recognize_face():
     frame_count = 0
     confirmed_patient_id = None
     confirm_start_time = None
+    last_logged_status = {}
 
+    fps_start_time = time.time()
+    fps_frame_count = 0
+    current_fps = 0
     display_state = {
         "label": None,
         "color": None,
@@ -74,9 +96,19 @@ def recognize_face():
     while True:
         ret, frame = cap.read()
         if not ret:
+            print("[WARNING] Camera frame lost. Retrying...")
+            time.sleep(0.5)
             continue
+        frame_count +=1
+        # ---------- FPS UPDATE ----------
+        fps_frame_count += 1
+        elapsed = time.time() - fps_start_time
 
-        frame_count += 1
+        if elapsed >= 1.0:
+            current_fps = fps_frame_count / elapsed
+            fps_frame_count = 0
+            fps_start_time = time.time()
+
 
         # ---------- FRAME SKIP ----------
         if frame_count % PROCESS_EVERY_N != 0:
@@ -96,6 +128,15 @@ def recognize_face():
                     display_state["color"],
                     2
                 )
+                cv2.putText(
+                    frame,
+                    f"FPS: {current_fps:.1f}",
+                    (20, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 255, 255),
+                    2
+                )
 
             cv2.imshow("Face Recognition", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -108,6 +149,10 @@ def recognize_face():
         embedding, bbox, face_count = get_face_embedding(small)
 
         if face_count == 0:
+            last_logged_status.clear()
+            confirmed_patient_id = None
+            confirm_start_time = None
+
             display_state.update({
                 "label": "NO FACE DETECTED",
                 "color": (0, 0, 255),
@@ -158,12 +203,30 @@ def recognize_face():
                 best_id = pid
                 best_name = data["name"]
 
+        
         # ---------- DECISION ----------
         if best_score >= RECOGNITION_THRESHOLD:
             status, result = check_medication(best_id)
-            now = time.time()
 
-            if status == "DISPENSE":
+            if status == "ERROR":
+                label = "SYSTEM ERROR"
+                color = (0, 0, 255)
+
+                safe_log(
+                    patient_id=best_id,
+                    patient_name=best_name,
+                    status="SYSTEM_ERROR",
+                    compartment=None,
+                    confidence=best_score,
+                    last_logged_status=last_logged_status
+                )
+
+                confirmed_patient_id = None
+                confirm_start_time = None
+
+            elif status == "DISPENSE":
+                now = time.time()
+
                 if confirmed_patient_id == best_id:
                     elapsed = now - confirm_start_time
                     last_time = last_dispense_time.get(best_id)
@@ -172,31 +235,26 @@ def recognize_face():
                         remaining = int(DISPENSE_COOLDOWN_SECONDS - (now - last_time))
                         label = f"{best_name} | WAIT {remaining}s"
                         color = (0, 0, 255)
-                        log_event(
-                            patient_id=best_id,
-                            patient_name=best_name,
-                            status="WAIT",
-                            compartment=None,
-                            confidence=best_score
-                        )
 
+                        safe_log(
+                            best_id, best_name, "WAIT",
+                            None, best_score, last_logged_status
+                        )
 
                     elif elapsed >= CONFIRM_SECONDS:
                         dispense_medication(result["compartment"])
                         last_dispense_time[best_id] = now
-                        label = f"{best_name} | DISPENSED ({best_score:.2f})"
 
+                        label = f"{best_name} | DISPENSED ({best_score:.2f})"
                         color = (0, 255, 0)
-                        confirmed_patient_id = None
-                        confirm_start_time = None
-                        log_event(
-                            patient_id=best_id,
-                            patient_name=best_name,
-                            status="DISPENSED",
-                            compartment=result["compartment"],
-                            confidence=best_score
+
+                        safe_log(
+                            best_id, best_name, "DISPENSED",
+                            result["compartment"], best_score, last_logged_status
                         )
 
+                        confirmed_patient_id = None
+                        confirm_start_time = None
 
                     else:
                         label = f"{best_name} | CONFIRMING {elapsed:.1f}s"
@@ -205,26 +263,30 @@ def recognize_face():
                 else:
                     confirmed_patient_id = best_id
                     confirm_start_time = now
-                    label = f"{best_name} | HOLD STILL({best_score:.2f})"
+                    label = f"{best_name} | HOLD STILL ({best_score:.2f})"
                     color = (0, 200, 0)
 
             elif status == "WARNING":
-                label = f"{best_name} | NOT TIME({best_score:.2f})"
+                label = f"{best_name} | NOT TIME ({best_score:.2f})"
                 color = (255, 255, 0)
-                confirmed_patient_id = None
-                confirm_start_time = None
-                log_event(
-                    patient_id=best_id,
-                    patient_name=best_name,
-                    status="NOT_TIME",
-                    compartment=None,
-                    confidence=best_score
+
+                safe_log(
+                    best_id, best_name, "NOT_TIME",
+                    None, best_score, last_logged_status
                 )
 
+                confirmed_patient_id = None
+                confirm_start_time = None
 
             else:  # BLOCKED
-                label = f"{best_name} | ALREADY TAKEN({best_score:.2f})"
+                label = f"{best_name} | ALREADY TAKEN ({best_score:.2f})"
                 color = (0, 165, 255)
+
+                safe_log(
+                    best_id, best_name, "ALREADY_TAKEN",
+                    None, best_score, last_logged_status
+                )
+
                 confirmed_patient_id = None
                 confirm_start_time = None
 
@@ -260,6 +322,16 @@ def recognize_face():
             color,
             2
         )
+        cv2.putText(
+            frame,
+            f"FPS: {current_fps:.1f}",
+            (20, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2
+        )
+
 
         cv2.imshow("Face Recognition", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
