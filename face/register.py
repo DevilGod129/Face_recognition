@@ -5,7 +5,6 @@ from face.utils import get_face_embedding
 SAMPLES_REQUIRED = 20   # Increased for better accuracy
 RESIZE_SCALE = 0.7
 
-
 def choose_patient():
     conn = get_connection()
     cur = conn.cursor()
@@ -13,29 +12,55 @@ def choose_patient():
     cur.execute("SELECT id, name FROM patients")
     patients = cur.fetchall()
 
-    if patients:
-        print("\nExisting patients:")
-        for pid, name in patients:
-            print(f"{pid}: {name}")
+    if not patients:
+        conn.close()
+        print("[INFO] No existing patients. Creating new.")
+        return create_new_patient(cur, conn)
 
+    print("\nExisting patients:")
+    for pid, name in patients:
+        print(f"{pid}: {name}")
+
+    while True:
         choice = input(
-            "\nEnter patient ID to ADD samples\n"
-            "or press Enter to CREATE new patient: "
-        )
+            "\nEnter PATIENT ID to add samples "
+            "(or press Enter to create NEW patient): "
+        ).strip()
 
-        if choice.strip():
+        # Create new patient
+        if choice == "":
+            patient_id = create_new_patient(cur, conn)
             conn.close()
-            return int(choice)
+            return patient_id
 
-    # Create new patient
+        # Must be numeric
+        if not choice.isdigit():
+            print("[ERROR] Please enter a numeric patient ID.")
+            continue
+
+        patient_id = int(choice)
+
+        # Validate ID exists
+        if any(pid == patient_id for pid, _ in patients):
+            conn.close()
+            return patient_id
+        else:
+            print("[ERROR] Invalid patient ID. Try again.")
+
+def create_new_patient(cur, conn):
     name = input("Enter new patient name: ").strip()
-    cur.execute("INSERT INTO patients (name) VALUES (?)", (name,))
-    conn.commit()
-    pid = cur.lastrowid
-    conn.close()
+    if not name:
+        print("[ERROR] Name cannot be empty.")
+        return create_new_patient(cur, conn)
 
-    print(f"[INFO] Created new patient: {name} (ID: {pid})")
-    return pid
+    cur.execute(
+        "INSERT INTO patients (name) VALUES (?)",
+        (name,)
+    )
+    conn.commit()
+    patient_id = cur.lastrowid
+    print(f"[SUCCESS] Patient '{name}' created with ID {patient_id}")
+    return patient_id
 
 
 def register_patient():

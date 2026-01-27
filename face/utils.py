@@ -3,7 +3,7 @@ from insightface.app import FaceAnalysis
 
 # Initialize once (important for performance)
 app = FaceAnalysis(name="buffalo_l")
-app.prepare(ctx_id=0)  # CPU
+app.prepare(ctx_id=-1)  # CPU-0 and 1-gpu(auto-detect)
 
 def get_face_embedding(frame):
     faces = app.get(frame)

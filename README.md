@@ -1,4 +1,4 @@
----
+
 
 ```markdown
 # 🧠 Face Recognition Based Medication Dispensing System
@@ -13,7 +13,7 @@ The system is designed to:
 
 The current implementation runs in **laptop simulation mode** and is **architected for seamless Raspberry Pi deployment** in later stages.
 
----
+
 
 ## 🎯 Key Features
 
