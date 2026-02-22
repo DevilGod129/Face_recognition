@@ -45,7 +45,7 @@ def load_embeddings():
 
     return patients
 
-def safe_log(patient
+def safe_log(patient_id, patient_name, status, compartment, confidence, last_logged_status):
     prev = last_logged_status.get(patient_id)
     if prev == status:
         return  # avoid duplicate logs
