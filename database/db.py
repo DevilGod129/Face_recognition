@@ -11,7 +11,7 @@ print("USING DATABASE FILE:", DB_PATH)
 
 def get_connection():
     try:
-        return sqlite3.connect(DB_PATH)
+        return sqlite3.connect(DB_PATH, timeout=10)
     except sqlite3.Error as e:
         print("[CRITICAL] Database connection failed:", e)
         return None

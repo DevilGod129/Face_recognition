@@ -44,7 +44,13 @@ def add_medication():
 
     patient_id = int(input("Enter patient ID: "))
     name = input("Medication name: ").strip()
-    compartment = int(input("Compartment number (1–3): "))
+    try:
+        compartment = int(input("Compartment number (1–3): "))
+    except ValueError:
+        print("[ERROR] Compartment must be a number")
+        conn.close()
+        return
+
 
     start = input("Start time (HH:MM): ").strip()
     end = input("End time (HH:MM): ").strip()

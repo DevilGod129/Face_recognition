@@ -1,24 +1,43 @@
 import cv2
 import numpy as np
 import time
+import requests
+
+PATIENT_API = "http://192.168.137.1:8000/api/patients"
+MEDICATION_API= "http://192.168.137.1:8000/api/medications" #replace IP
+LOG_API="http://192.168.137.1:8000/api/logs"
+API_KEY = "supersecretkey123"
+SYNC_INTERVAL = 30 # 5 minutes
 
 from face.utils import get_face_embedding
 from database.db import get_connection
 from medication.scheduler import check_medication
 from medication.dispenser import dispense_medication
-from tools.logger import log_event
+from datetime import datetime
+from database.db import get_connection
 
 
 # ---------------- CONFIG ----------------
 RECOGNITION_THRESHOLD = 0.45
 UNCERTAIN_THRESHOLD   = 0.35
-CONFIRM_SECONDS       = 2.5
-PROCESS_EVERY_N       = 5
-DISPLAY_HOLD_TIME     = 0.8
-RESIZE_SCALE          = 0.5
+CONFIRM_SECONDS       = 3.5
+PROCESS_EVERY_N       = 12
+DISPLAY_HOLD_TIME     = 1.0
+RESIZE_SCALE          = 0.4
 DISPENSE_COOLDOWN_SECONDS = 60   # safety lock
+STABLE_FRAMES_REQUIRED = 4
 # ----------------------------------------
+DEBUG = False
 
+
+def update_backend_medication(med_id):
+    try:
+        response = requests.put(
+            f"http://192.168.137.1:8000/api/medications/{med_id}/dispense"
+        )
+        print("[SYNC] Backend medication updated:", response.status_code)
+    except Exception as e:
+        print("[SYNC ERROR]", e)
 
 def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
@@ -45,24 +64,142 @@ def load_embeddings():
 
     return patients
 
-def safe_log(patient_id, patient_name, status, compartment, confidence, last_logged_status):
-    prev = last_logged_status.get(patient_id)
-    if prev == status:
-        return  # avoid duplicate logs
+def capture_photo(cap):
 
-    log_event(
-        patient_id=patient_id,
-        patient_name=patient_name,
-        status=status,
-        compartment=compartment,
-        confidence=confidence
-    )
+    ret, frame = cap.read()
 
-    last_logged_status[patient_id] = status
+    if not ret:
+        print("[PHOTO] Failed to capture image")
+        return None
+
+    filename = "dispense.jpg"
+    cv2.imwrite(filename, frame)
+
+    return filename
 
 
-def recognize_face():
+def send_log_to_backend(patient_id, status, compartment, confidence, image_path=None):
+
+    headers = {
+        "x-api-key": API_KEY
+    }
+
+    data = {
+        "status": str(status),
+        "compartment": str(compartment),
+        "confidence": str(confidence),
+        "patient_id": str(patient_id)
+    }
+
+    files = None
+
+    if image_path:
+        try:
+            files = {
+                "image": ("dispense.jpg", open(image_path, "rb"), "image/jpeg")
+            }
+        except:
+            files = None
+
+    try:
+        response = requests.post(
+            LOG_API,
+            data=data,     # must be form data
+            files=files,   # optional image
+            headers=headers,
+            timeout=5
+        )
+
+        print("[LOG] Sent to backend:", response.status_code)
+        print("[LOG RESPONSE]", response.text)
+
+    except Exception as e:
+        print("[LOG ERROR]", e)
+
+
+
+def sync_patients():
+
+    try:
+        print("[SYNC] Fetching patients from backend...")
+
+        response = requests.get(PATIENT_API)
+        patients = response.json()
+
+        conn = get_connection()
+        cur = conn.cursor()
+
+        for p in patients:
+            cur.execute("""
+            INSERT OR REPLACE INTO patients (id, name)
+            VALUES (?, ?)
+            """, (p["id"], p["name"]))
+
+        conn.commit()
+        conn.close()
+
+        print("[SYNC] Patients synced:", len(patients))
+
+    except Exception as e:
+        print("[SYNC ERROR]", e)
+
+
+
+def sync_medications():
+    try:
+        print("[SYNC] Fetching medications from backend...")
+        response = requests.get(MEDICATION_API, timeout=5)
+        response.raise_for_status()
+        meds = response.json()
+
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS medications (
+         id INTEGER PRIMARY KEY,
+         patient_id INTEGER,
+         name TEXT,
+         compartment INTEGER,
+         start_time TEXT,
+             end_time TEXT,
+         last_dispensed TEXT
+            )
+    """)
+
+        cur.execute("DELETE FROM medications")
+        for med in meds:
+            cur.execute("""
+                        INSERT OR REPLACE INTO medications
+                        (id, patient_id, name, compartment, start_time, end_time, last_dispensed)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                        med["id"],
+                        med["patient_id"],
+                        med["name"],
+                        med["compartment"],
+                        med["start_time"],
+                        med["end_time"],
+                        med.get("last_dispensed")
+))
+
+
+        conn.commit()
+        conn.close()
+
+        print("[SYNC] Success. Inserted:", len(meds))
+
+    except Exception as e:
+        print("[SYNC] Failed:", e)
+
+
+def recognize_face_with_exit():
     known_faces = load_embeddings()
+    last_sync_time = 0
+    last_check_time =0
+    CHECK_INTERVAL = 2
+    sync_patients()
+    sync_medications()
     last_dispense_time = {}
 
     if not known_faces:
@@ -70,11 +207,16 @@ def recognize_face():
         return
 
     cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE,1)
+    
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
     if not cap.isOpened():
         print("[CRITICAL] Camera not detected. System paused.")
         return
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    else:
+        print("Camera opened successfully")
+
 
     print("[INFO] Face recognition started (press 'q' to quit)")
 
@@ -86,18 +228,29 @@ def recognize_face():
     fps_start_time = time.time()
     fps_frame_count = 0
     current_fps = 0
-    display_state = {
-        "label": None,
-        "color": None,
-        "bbox": None,
-        "time": 0
-    }
-
+    '''
+    while DEBUG:
+        display_state = {
+            "label": None,
+            "color": None,
+            "bbox": None,
+            "time": 0
+        }
+'''
     while True:
+        
+        #----- PERIODIC SYNC---#
+        current_time = time.time()
+        if current_time - last_sync_time>= SYNC_INTERVAL:
+            sync_medications()
+            last_sync_time = current_time
+       #---------------------
         ret, frame = cap.read()
         if not ret:
             print("[WARNING] Camera frame lost. Retrying...")
-            time.sleep(0.5)
+            cap.release()
+            time.sleep(1)
+            cap =cv2.VideoCapture(0)
             continue
         frame_count +=1
         # ---------- FPS UPDATE ----------
@@ -110,40 +263,42 @@ def recognize_face():
             fps_start_time = time.time()
 
 
-        # ---------- FRAME SKIP ----------
-        if frame_count % PROCESS_EVERY_N != 0:
-            now = time.time()
-            if (
-                display_state["bbox"] is not None and
-                (now - display_state["time"]) <= DISPLAY_HOLD_TIME
-            ):
-                x1, y1, x2, y2 = display_state["bbox"]
-                cv2.rectangle(frame, (x1, y1), (x2, y2), display_state["color"], 2)
-                cv2.putText(
-                    frame,
-                    display_state["label"],
-                    (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    display_state["color"],
-                    2
-                )
-                cv2.putText(
-                    frame,
-                    f"FPS: {current_fps:.1f}",
-                    (20, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 255),
-                    2
-                )
-
-            cv2.imshow("Face Recognition", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+        '''
+        while DEBUG:# ---------- FRAME SKIP ----------
+            if frame_count % PROCESS_EVERY_N != 0:
+                now = time.time()
+                if (
+                    display_state["bbox"] is not None and
+                    (now - display_state["time"]) <= DISPLAY_HOLD_TIME
+                ):
+                    x1, y1, x2, y2 = display_state["bbox"]
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), display_state["color"], 2)
+                    cv2.putText(
+                        frame,
+                        display_state["label"],
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        display_state["color"],
+                        2
+                    )
+                    cv2.putText(
+                        frame,
+                        f"FPS: {current_fps:.1f}",
+                        (20, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (255, 255, 255),
+                        2
+                    )
+            if DEBUG:
+                cv2.imshow("Face Recognition", frame)
+            if DEBUG:
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
             continue
         # --------------------------------
-
+'''
         # ---------- FACE DETECTION ----------
         small = cv2.resize(frame, None, fx=RESIZE_SCALE, fy=RESIZE_SCALE)
         embedding, bbox, face_count = get_face_embedding(small)
@@ -152,33 +307,36 @@ def recognize_face():
             last_logged_status.clear()
             confirmed_patient_id = None
             confirm_start_time = None
-
-            display_state.update({
-                "label": "NO FACE DETECTED",
-                "color": (0, 0, 255),
-                "bbox": None,
-                "time": time.time()
-            })
-            cv2.imshow("Face Recognition", frame)
+            if DEBUG:
+                display_state.update({
+                    "label": "NO FACE DETECTED",
+                    "color": (0, 0, 255),
+                    "bbox": None,
+                    "time": time.time()
+                })
+            if DEBUG:
+                cv2.imshow("Face Recognition", frame)
             continue
 
         if face_count > 1:
-            display_state.update({
-                "label": "MULTIPLE FACES DETECTED",
-                "color": (0, 0, 255),
-                "bbox": None,
-                "time": time.time()
-            })
-            cv2.putText(
-                frame,
-                "MULTIPLE FACES DETECTED",
-                (30, 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                (0, 0, 255),
-                3
-            )
-            cv2.imshow("Face Recognition", frame)
+            if DEBUG:
+                display_state.update({
+                    "label": "MULTIPLE FACES DETECTED",
+                    "color": (0, 0, 255),
+                    "bbox": None,
+                    "time": time.time()
+                })
+                cv2.putText(
+                    frame,
+                    "MULTIPLE FACES DETECTED",
+                    (30, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0,
+                    (0, 0, 255),
+                    3
+                )
+            if DEBUG:
+                cv2.imshow("Face Recognition", frame)
             continue
 
         # ---------- SCALE BBOX ----------
@@ -202,24 +360,28 @@ def recognize_face():
                 best_score = score
                 best_id = pid
                 best_name = data["name"]
+        
+        
+        print(f"RECOGNIZED PATIENT ID: {best_id} | NAME: {best_name} | SCORE: {best_score:.2f}")
 
         
         # ---------- DECISION ----------
         if best_score >= RECOGNITION_THRESHOLD:
-            status, result = check_medication(best_id)
+            
+            now_time = time.time()
+            if now_time - last_check_time < CHECK_INTERVAL:
+                 continue
+            last_check_time = now_time
+            print(f"[CALLING CHECK] patient={best_id}")
+            status,result = check_medication(best_id)
+            print(f"[CHECK] Patient {best_id} | Status: {status}")
 
             if status == "ERROR":
                 label = "SYSTEM ERROR"
                 color = (0, 0, 255)
 
-                safe_log(
-                    patient_id=best_id,
-                    patient_name=best_name,
-                    status="SYSTEM_ERROR",
-                    compartment=None,
-                    confidence=best_score,
-                    last_logged_status=last_logged_status
-                )
+                
+                
 
                 confirmed_patient_id = None
                 confirm_start_time = None
@@ -236,26 +398,64 @@ def recognize_face():
                         label = f"{best_name} | WAIT {remaining}s"
                         color = (0, 0, 255)
 
-                        safe_log(
-                            best_id, best_name, "WAIT",
-                            None, best_score, last_logged_status
-                        )
-
                     elif elapsed >= CONFIRM_SECONDS:
-                        dispense_medication(result["compartment"])
+                        med_id = result["medication_id"]
+
+                        # -------- BACKEND FIRST --------
+                        try:
+                            response = requests.put(
+                                f"http://192.168.137.1:8000/api/medications/{med_id}/dispense",
+                                timeout=5
+                            )
+
+                            print("[BACKEND RESPONSE]", response.status_code, response.text)
+
+                            if response.status_code != 200:
+                                label = f"{best_name} | BLOCKED BY BACKEND"
+                                color = (0, 0, 255)
+                                last_dispense_time[best_id]=now
+
+                                confirmed_patient_id = None
+                                confirm_start_time = None
+                                continue
+
+                        except Exception as e:
+                            print("[BACKEND ERROR]", e)
+                            continue
+
+                        # -------- ONLY IF APPROVED --------
+                        #dispense_medication(result["compartment"])
+                        compartment = result["compartment"]
                         last_dispense_time[best_id] = now
+                        # -------- LOCAL UPDATE --------
+                        conn = get_connection()
+                        cur = conn.cursor()
 
-                        label = f"{best_name} | DISPENSED ({best_score:.2f})"
-                        color = (0, 255, 0)
+                        cur.execute("""
+                        UPDATE medications
+                        SET last_dispensed = ?
+                        WHERE id = ?
+                        """, (
+                            datetime.now().isoformat(),
+                            med_id
+                        ))
 
-                        safe_log(
-                            best_id, best_name, "DISPENSED",
-                            result["compartment"], best_score, last_logged_status
+                        conn.commit()
+                        conn.close()
+
+                        # -------- PHOTO --------
+                        photo = capture_photo(cap)
+
+                        # -------- LOG --------
+                        send_log_to_backend(
+                            best_id,
+                            "DISPENSED",
+                            result["compartment"],
+                            best_score,
+                            photo
                         )
 
-                        confirmed_patient_id = None
-                        confirm_start_time = None
-
+                        return result["compartment"]
                     else:
                         label = f"{best_name} | CONFIRMING {elapsed:.1f}s"
                         color = (0, 200, 0)
@@ -270,10 +470,7 @@ def recognize_face():
                 label = f"{best_name} | NOT TIME ({best_score:.2f})"
                 color = (255, 255, 0)
 
-                safe_log(
-                    best_id, best_name, "NOT_TIME",
-                    None, best_score, last_logged_status
-                )
+               
 
                 confirmed_patient_id = None
                 confirm_start_time = None
@@ -282,10 +479,6 @@ def recognize_face():
                 label = f"{best_name} | ALREADY TAKEN ({best_score:.2f})"
                 color = (0, 165, 255)
 
-                safe_log(
-                    best_id, best_name, "ALREADY_TAKEN",
-                    None, best_score, last_logged_status
-                )
 
                 confirmed_patient_id = None
                 confirm_start_time = None
@@ -302,40 +495,61 @@ def recognize_face():
             confirmed_patient_id = None
             confirm_start_time = None
 
+        
         # ---------- UPDATE DISPLAY ----------
-        display_state.update({
-            "label": label,
-            "color": color,
-            "bbox": bbox,
-            "time": time.time()
-        })
+        if DEBUG:
+            display_state.update({
+                "label": label,
+                "color": color,
+                "bbox": bbox,
+                "time": time.time()
+            })
 
         # ---------- DRAW ----------
         x1, y1, x2, y2 = bbox
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(
-            frame,
-            label,
-            (x1, y1 - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            color,
-            2
-        )
-        cv2.putText(
-            frame,
-            f"FPS: {current_fps:.1f}",
-            (20, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2
-        )
+        if DEBUG:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                frame,
+                label,
+                (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                color,
+                2
+            )
+            cv2.putText(
+                frame,
+                f"FPS: {current_fps:.1f}",
+                (20, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2
+            )
 
-
-        cv2.imshow("Face Recognition", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        if DEBUG:
+            cv2.imshow("Face Recognition", frame)
+        if DEBUG:
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
     cap.release()
     cv2.destroyAllWindows()
+def recognize_once():
+    """
+    Runs recognition until ONE successful dispense happens,
+    then returns True.
+    """
+
+    from medication.scheduler import check_medication
+    from medication.dispenser import dispense_medication
+
+    print("[ROBOT] Starting single recognition cycle...")
+
+    # Call original function but stop after first dispense
+    # 👉 SIMPLE APPROACH: reuse recognize_face but exit early
+
+    result = recognize_face_with_exit()
+
+    return result

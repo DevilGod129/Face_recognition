@@ -1,50 +1,27 @@
-from datetime import datetime
-from database.db import get_connection
+import requests
+
+# Backend API endpoint
+LOG_API = "http://192.168.137.1:8000/api/logs"
+API_KEY = "supersecretkey123"
+
 
 def log_event(patient_id, patient_name, status, compartment=None, confidence=None):
     try:
-        conn = get_connection()
-        if conn is None:
-            return
+        payload = {
+            "status": status,
+            "compartment": int(compartment) if compartment else 0,
+            "confidence": float(confidence) if confidence else 0.0,
+            "patient_id": int(patient_id)
+        }
 
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO dispense_logs
-            (timestamp, patient_id, patient_name, status, compartment, confidence)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            patient_id,
-            patient_name,
-            status,
-            compartment,
-            confidence
-        ))
+        headers = {
+            "x-api-key": API_KEY
+        }
 
-        conn.commit()
-        conn.close()
+        response = requests.post(LOG_API, json=payload, headers=headers)
+
+        print("[LOG] Sent to backend:", response.status_code)
 
     except Exception as e:
-        print("[LOGGING ERROR]", e)
+        print("[LOG ERROR]", e)
 
-
-def view_logs(limit=20):
-    """
-    Development helper: prints last N dispense events
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT timestamp, patient_name, status, compartment, confidence
-        FROM dispense_logs
-        ORDER BY id DESC
-        LIMIT ?
-    """, (limit,))
-
-    rows = cur.fetchall()
-    conn.close()
-
-    print("\n--- RECENT DISPENSE LOGS ---")
-    for row in rows:
-        print(row)

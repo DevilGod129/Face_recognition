@@ -2,8 +2,10 @@ import numpy as np
 from insightface.app import FaceAnalysis
 
 # Initialize once (important for performance)
-app = FaceAnalysis(name="buffalo_l")
-app.prepare(ctx_id=-1)  # CPU-0 and 1-gpu(auto-detect)
+app = FaceAnalysis(name="buffalo_s",
+                    providers=["CPUExecutionProvider"],
+                   allowed_modules=['detection','recognition'])
+app.prepare(ctx_id=0,det_size=(320,320))  # CPU-0 and 1-gpu(auto-detect)
 
 def get_face_embedding(frame):
     faces = app.get(frame)
